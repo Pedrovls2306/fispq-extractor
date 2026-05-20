@@ -1,0 +1,67 @@
+from flask import Flask, render_template, request, jsonify, send_file
+import os
+import json
+import pandas as pd
+from werkzeug.utils import secure_filename
+from extractor import FISPQExtractor
+import tempfile
+import zipfile
+
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 500 * 1024 * 1024
+extractor = FISPQExtractor()
+
+@app.route('/')
+def index():
+    return render_template('index.html')
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    if 'files' not in request.files:
+        return jsonify({'erro': 'Nenhum arquivo enviado'}), 400
+    
+    arquivos = request.files.getlist('files')
+    
+    if len(arquivos) == 0:
+        return jsonify({'erro': 'Nenhum arquivo selecionado'}), 400
+    
+    temp_dir = tempfile.mkdtemp()
+    caminhos = []
+    
+    for arquivo in arquivos:
+        if arquivo.filename.endswith('.pdf'):
+            filename = secure_filename(arquivo.filename)
+            caminho = os.path.join(temp_dir, filename)
+            arquivo.save(caminho)
+            caminhos.append(caminho)
+    
+    resultados = extractor.processar_multiplos(caminhos)
+    
+    dados_csv = []
+    for resultado in resultados:
+        for ingrediente in resultado['ingredientes']:
+            dados_csv.append({
+                'Arquivo': resultado['arquivo'],
+                'Nome Produto': resultado['nome_produto'],
+                'Ingrediente': ingrediente['ingrediente'],
+                'CAS': ingrediente['cas'],
+                'Concentração': ingrediente['concentracao']
+            })
+    
+    df = pd.DataFrame(dados_csv)
+    csv_path = os.path.join(temp_dir, 'resultados.csv')
+    df.to_csv(csv_path, index=False, encoding='utf-8-sig')
+    
+    json_path = os.path.join(temp_dir, 'resultados.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(resultados, f, ensure_ascii=False, indent=2)
+    
+    zip_path = os.path.join(temp_dir, 'resultados_completos.zip')
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        zipf.write(csv_path, 'resultados.csv')
+        zipf.write(json_path, 'resultados.json')
+    
+    return send_file(zip_path, as_attachment=True, download_name='fispq_resultados.zip')
+
+if __name__ == '__main__':
+    app.run(debug=True, port=5000)

@@ -1,0 +1,91 @@
+import pdfplumber
+import re
+import json
+from typing import Dict, List
+
+class FISPQExtractor:
+    def __init__(self):
+        self.dados = []
+    
+    def extrair_nome_produto(self, texto: str) -> str:
+        padroes = [
+            r'(?i)PRODUTO\s*:\s*([^\n]+)',
+            r'(?i)NOME\s+DO\s+PRODUTO\s*:\s*([^\n]+)',
+            r'(?i)IDENTIFICAÇÃO\s*:\s*([^\n]+)',
+            r'(?i)1\.\s*IDENTIFICAÇÃO\s*[\n]+([^\n]+)'
+        ]
+        for padrao in padroes:
+            match = re.search(padrao, texto)
+            if match:
+                return match.group(1).strip()
+        return "Não encontrado"
+    
+    def extrair_ingredientes(self, texto: str) -> List[Dict]:
+        ingredientes = []
+        
+        secao3_pattern = r'(?i)(?:SEÇÃO|SECAO|SECTION)\s*3[^\n]*\n(.*?)(?=(?:SEÇÃO|SECAO|SECTION)\s*4|\Z)'
+        match_secao3 = re.search(secao3_pattern, texto, re.DOTALL)
+        
+        if match_secao3:
+            conteudo = match_secao3.group(1)
+            
+            padrao_ingrediente = r'([A-Za-zÀ-ú\s\-\(\)]+?)\s*(?:CAS[:\s]*(\d{2,7}-\d{2,7}-\d))?\s*(?:CONCENTRAÇÃO|CONCENTRACAO|TEOR|%)\s*:?\s*([^%\n]+%?)'
+            
+            matches = re.finditer(padrao_ingrediente, conteudo, re.IGNORECASE)
+            for match in matches:
+                ingrediente = {
+                    'ingrediente': match.group(1).strip(),
+                    'cas': match.group(2) if match.group(2) else "N/E",
+                    'concentracao': match.group(3).strip()
+                }
+                ingredientes.append(ingrediente)
+            
+            if not ingredientes:
+                linhas = conteudo.split('\n')
+                for linha in linhas:
+                    if re.search(r'\d{2,7}-\d{2,7}-\d', linha):
+                        parts = linha.split('CAS')
+                        nome = parts[0].strip()
+                        cas_match = re.search(r'(\d{2,7}-\d{2,7}-\d)', linha)
+                        conc_match = re.search(r'(\d+(?:[,.]?\d+)?\s*%)', linha)
+                        
+                        ingredientes.append({
+                            'ingrediente': nome,
+                            'cas': cas_match.group(1) if cas_match else "N/E",
+                            'concentracao': conc_match.group(1) if conc_match else "N/E"
+                        })
+        
+        return ingredientes if ingredientes else [{'ingrediente': 'Não encontrado', 'cas': 'N/E', 'concentracao': 'N/E'}]
+    
+    def processar_pdf(self, caminho_arquivo: str) -> Dict:
+        texto_completo = ""
+        try:
+            with pdfplumber.open(caminho_arquivo) as pdf:
+                for pagina in pdf.pages:
+                    texto = pagina.extract_text()
+                    if texto:
+                        texto_completo += texto + "\n"
+            
+            nome_produto = self.extrair_nome_produto(texto_completo)
+            ingredientes = self.extrair_ingredientes(texto_completo)
+            
+            return {
+                'arquivo': caminho_arquivo.split('/')[-1],
+                'nome_produto': nome_produto,
+                'ingredientes': ingredientes
+            }
+        except Exception as e:
+            return {
+                'arquivo': caminho_arquivo,
+                'erro': str(e),
+                'nome_produto': 'Erro ao processar',
+                'ingredientes': []
+            }
+    
+    def processar_multiplos(self, arquivos: List[str]) -> List[Dict]:
+        resultados = []
+        for idx, arquivo in enumerate(arquivos, 1):
+            print(f"Processando {idx}/{len(arquivos)}: {arquivo}")
+            resultado = self.processar_pdf(arquivo)
+            resultados.append(resultado)
+        return resultados
